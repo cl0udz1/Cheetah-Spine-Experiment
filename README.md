@@ -1,19 +1,24 @@
-# Does an active spine help a quadruped run?
+# Does an active spine help a quadruped run? A controlled MuJoCo study under CPG control
 
-A controlled MuJoCo study of a cheetah-inspired quadruped with a 3-DOF active spine, measured against a rigid trunk and a passive compliant trunk under identical controllers. **The spine contributes nothing to straight-line running. Its only measurable benefit is turning, and that benefit comes entirely from holding a constant ~16° yaw offset — articulated steering, not spine undulation.**
+A cheetah-inspired quadruped with a 3-DOF active spine, measured against a rigid trunk and a passive compliant trunk under identical hand-written CPG controllers. **The spine buys roughly 1–2% forward speed and 8% turn rate, and pays for it with about 80% worse path tracking. Most of the turning benefit is a constant ~16° yaw offset — articulated steering rather than undulation. The direction of the flexion asymmetry matters more than its presence: running it backwards costs 11%.**
+
+The qualifier in the title is load-bearing: every result here is conditional on the controller being a fixed CPG rather than a learned policy, and on a trot rather than a bound. See [What this does and does not show](#what-this-does-and-does-not-show).
 
 ![Side-by-side animation of two identical quadrupeds executing the same 0.8 rad/s turn command, the left one with an active 3-DOF spine and the right one with a rigid trunk. Both circle at visibly similar rates; the spine model's trunk holds a slight constant bend rather than visibly undulating.](docs/media/hero_turn.gif)
 
-*Active spine (left) and rigid trunk (right) running the same turn command from the same initial state. The spine model turns 6.1% faster. Watch the trunk: it holds a steady bend rather than oscillating — that constant offset is where the entire advantage comes from.*
+*Active spine (left) and rigid trunk (right) running the same turn command from the same initial state. The spine model turns 8.1% faster. Watch the trunk: it holds a steady bend rather than oscillating — that constant offset supplies about two thirds of the advantage.*
 
 ## TL;DR
 
-- **Straight-line running: no effect at all.** At 1.0 m/s the active spine, rigid trunk and passive spine reach 0.8641 ± 0.0003, 0.8639 ± 0.0003 and 0.8661 ± 0.0002 m/s. At 2.0 m/s: 1.7938 ± 0.0093, 1.7992 ± 0.0088, 1.8030 ± 0.0101 m/s. All three agree to within 0.5%, which is smaller than the spread across seeds.
-- **Turning is the only real effect: +6.07% yaw rate** (0.7640 ± 0.0011 vs 0.7203 ± 0.0016 rad/s), and it requires actuation — the passive spine is 6.75% *worse* than rigid.
-- **The mechanism is articulated steering, not undulation.** A spine that only holds a static yaw bias reproduces 104% of the advantage (0.766 vs 0.764 rad/s). A spine that only undulates, with the bias removed, is **4.9% worse than rigid**.
-- **The active spine costs energy.** Cost of transport is 1.75–2.32% higher than rigid at every command tested.
-- **Turning faster is not turning better.** The spine's cross-track error on the commanded circle is 17.8% *worse* than rigid (0.291 ± 0.005 vs 0.247 ± 0.003 m).
-- The biological framing — that a cheetah's spine flexion is a propulsive mechanism worth engineering — does not survive the measurement here. Under a CPG controller, undulation is a cost, not a benefit.
+- **Straight-line running: a small but real gain.** At 1.0 m/s the active spine reaches 0.8724 ± 0.0007 m/s against rigid's 0.8639 ± 0.0003 (**+0.99%**); at 2.0 m/s, 1.8315 ± 0.0066 against 1.7992 ± 0.0088 (**+1.79%**). Both sit outside the seed spread.
+- **The gain is active, not compliance.** The passive spine returns +0.25% and +0.21% — indistinguishable from rigid. Whatever the spine is doing, it does with its motors.
+- **Asymmetry direction dominates.** Holding amplitude and phase fixed and varying only the flexion:extension ratio: 2.0 flexion-dominant (biological) gives +0.99%/+1.79%, 1.0 symmetric gives −1.59%/+1.65%, and 0.5 extension-dominant gives **−11.44%/−7.20%**. Running the asymmetry backwards costs far more than not having one.
+- **Turning: +8.12% yaw rate** (0.7788 ± 0.0010 vs 0.7203 ± 0.0016 rad/s), and again it requires actuation — the passive spine is 6.75% *worse* than rigid.
+- **Most of the turning benefit is steering, not undulation.** A spine holding only a static yaw bias reproduces 64% of the advantage. Undulation *alone*, with the bias removed, is **12.6% worse than rigid**; it contributes only in combination with the bias.
+- **The cost is path tracking.** Straight-line cross-track error is 85% worse at 1.0 m/s and 77% worse at 2.0 (0.893 ± 0.014 vs 0.483 ± 0.003 m). Energy is a wash — cost of transport is within 0.02% at 1.0 m/s and 2.26% *cheaper* at 2.0.
+- The biological framing survives only in a weak form. The flexion-dominant asymmetry genuinely is the best of the three directions tested, but the payoff is a low-single-digit speed gain in a trot — and a trot is not the gait the biological argument concerns.
+
+> **Correction, August 2026.** An earlier version of this README reported *no* straight-line effect and described the realised flexion:extension ratio as "heavily attenuated". Both were artefacts of an inverted waveform: a `flexion_sign` parameter defaulting to `-1.0` ran the asymmetry backwards, so every undulation result was measured on an extension-dominant spine. All of them have been re-measured. See [Errors found and corrected](#errors-found-and-corrected), item 10.
 
 ## Background
 
@@ -40,11 +45,13 @@ That is the disagreement this repo examines: two credible groups reached opposit
 
 All three are **mass-matched at 6.769171 kg**, verified at build time. That is what makes the comparison a test of trunk topology rather than of mass distribution.
 
-| variant | construction | nq | nv | nu | njnt | spine joints |
-|---|---|---|---|---|---|---|
-| `spine` | unmodified: 3 spine joints, motor-driven | 24 | 23 | 17 | 18 | 3, actuated |
-| `rigid` | spine `<joint>` and `<motor>` elements **deleted**; MuJoCo welds the child body to its parent at compile time | 21 | 20 | 14 | 15 | none |
-| `passive` | spine joints kept with `stiffness=400`, `damping=12`; **all spine motors deleted** | 24 | 23 | 14 | 18 | 3, unactuated |
+| variant | construction | spine joints | spine actuators | nq | nv | nu | njnt |
+|---|---|---|---|---|---|---|---|
+| `spine` | unmodified: 3 spine joints, motor-driven | **3** | **3** | 24 | 23 | 17 | 18 |
+| `rigid` | spine `<joint>` and `<motor>` elements **deleted**; MuJoCo welds the child body to its parent at compile time | **0** | **0** | 21 | 20 | 14 | 15 |
+| `passive` | spine joints kept with `stiffness=400`, `damping=12`; **all spine motors deleted** | **3** | **0** | 24 | 23 | 14 | 18 |
+
+`rigid` and `passive` both have `nu=14`, but for opposite reasons: `rigid` has no spine joints to drive, while `passive` keeps all three joints and simply has no motors on them. The distinguishing numbers are `nv` — 20 for `rigid` against 23 for `passive` and `spine` — and the spine-actuator column. `build_model` asserts both.
 
 The rigid variant deletes joints rather than stiffening them. Stiffening a hinge to fake a weld degrades the mass-matrix conditioning and the solver diverges while still returning finite-looking numbers — a failure mode this study measured directly (see the calibration table below, `kp=1200` and `kp=4000` rows).
 
@@ -102,24 +109,36 @@ Any rollout that trips the stability monitor — non-finite `qpos`/`qvel`/`qacc`
 
 All results: 8 seeds with randomised initial joint angles, drop height, heading and trunk velocity; 8 s per rollout; identical leg gait across variants. **Zero falls and zero divergences in every row below.**
 
-### Straight-line running: no effect
+### Straight-line running: a small active gain, paid for in path tracking
 
-| command | variant | net progress (m/s) | peak speed (m/s) | cost of transport | cross-track (m) |
+| command | variant | net progress (m/s) | vs rigid | peak speed (m/s) | cost of transport | cross-track (m) |
+|---|---|---|---|---|---|---|
+| 1.0 m/s | spine | **0.8724 ± 0.0007** | **+0.99%** | 1.1163 ± 0.0025 | 1.7677 ± 0.0010 | **0.893 ± 0.014** |
+| 1.0 m/s | rigid | 0.8639 ± 0.0003 | — | 1.0670 ± 0.0017 | 1.7680 ± 0.0009 | 0.483 ± 0.003 |
+| 1.0 m/s | passive | 0.8661 ± 0.0002 | +0.25% | 1.0650 ± 0.0027 | 1.7523 ± 0.0010 | 0.519 ± 0.003 |
+| 2.0 m/s | spine | **1.8315 ± 0.0066** | **+1.79%** | 2.2873 ± 0.0112 | 1.3980 ± 0.0047 | **0.849 ± 0.120** |
+| 2.0 m/s | rigid | 1.7992 ± 0.0088 | — | 2.3282 ± 0.0055 | 1.4302 ± 0.0077 | 0.480 ± 0.034 |
+| 2.0 m/s | passive | 1.8030 ± 0.0101 | +0.21% | 2.3007 ± 0.0125 | 1.4236 ± 0.0097 | 0.527 ± 0.045 |
+
+The active spine is faster at both commands, by margins that sit outside the seed spread. The passive spine is not — +0.25% and +0.21% are inside it. So the gain comes from driving the spine, not from having a compliant one.
+
+It is a small gain and it is not free. Cross-track error is **85% worse at 1.0 m/s and 77% worse at 2.0 m/s**: the undulating trunk pushes the body laterally every cycle and the path controller only partly rejects it. Energy is roughly neutral — cost of transport is within 0.02% at 1.0 m/s and 2.26% cheaper at 2.0.
+
+Note also that peak speed and net progress disagree in sign at 2.0 m/s: the spine has the *lower* peak (2.287 vs 2.328) but the *higher* net progress. It is sustaining speed better rather than reaching a higher one.
+
+The asymmetry direction is what actually matters. Holding amplitude at 0.05 rad and phase at 0.25 and varying only the flexion:extension ratio, 8 seeds:
+
+| flexion:extension | net @1.0 m/s | vs rigid | net @2.0 m/s | vs rigid | realised ratio |
 |---|---|---|---|---|---|
-| 1.0 m/s | spine | 0.8641 ± 0.0003 | 1.0624 ± 0.0006 | 1.8090 ± 0.0011 | 0.497 ± 0.002 |
-| 1.0 m/s | rigid | 0.8639 ± 0.0003 | 1.0670 ± 0.0017 | 1.7680 ± 0.0009 | 0.483 ± 0.003 |
-| 1.0 m/s | passive | 0.8661 ± 0.0002 | 1.0650 ± 0.0027 | 1.7523 ± 0.0010 | 0.519 ± 0.003 |
-| 2.0 m/s | spine | 1.7938 ± 0.0093 | 2.3183 ± 0.0109 | 1.4590 ± 0.0116 | 0.442 ± 0.058 |
-| 2.0 m/s | rigid | 1.7992 ± 0.0088 | 2.3282 ± 0.0055 | 1.4302 ± 0.0077 | 0.480 ± 0.034 |
-| 2.0 m/s | passive | 1.8030 ± 0.0101 | 2.3007 ± 0.0125 | 1.4236 ± 0.0097 | 0.527 ± 0.045 |
+| **2.0** flexion-dominant (biological) | 0.8724 ± 0.0007 | **+0.99%** | 1.8315 ± 0.0066 | **+1.79%** | 2.215 |
+| 1.0 symmetric sinusoid | 0.8502 ± 0.0006 | −1.59% | 1.8290 ± 0.0073 | +1.65% | 1.205 |
+| 0.5 extension-dominant | 0.7650 ± 0.0009 | **−11.44%** | 1.6697 ± 0.0306 | **−7.20%** | 0.600 |
 
-The active spine is **+0.02%** at 1.0 m/s and **−0.30%** at 2.0 m/s against rigid. Both are far inside the seed spread. The passive spine is +0.25% and +0.21% — equally null.
-
-This is not "the spine helps a little". It is three mechanically different trunks producing the same speed. The only consistent difference is that the actuated spine **costs more energy**: cost of transport is 2.32% higher at 1.0 m/s and 2.01% higher at 2.0 m/s, and it is the only variant burning actuator power on the trunk.
+Monotone and far outside noise. The biological direction is the best of the three, and getting it backwards is roughly ten times more costly than the benefit of getting it right. The realised ratios confirm the commanded asymmetry reaches the joint accurately in all three cases.
 
 ![Top-down trajectory plot for the 1.0 m/s straight command showing the commanded straight path as a dashed grey line and three near-identical robot tracks overlaying it closely.](docs/media/trajectory_straight_1.0.png)
 
-*Straight-line path tracking at 1.0 m/s. The three variants are indistinguishable — the tracks overlay each other. Note the scale: total lateral excursion is under half a metre over roughly 7 m travelled, after the closed-loop path controller was added. Before it, the rigid variant alone drifted 2.3 m (see Errors).*
+*Straight-line path tracking at 1.0 m/s, seed 0. This is the cost of the spine made visible: the spine track (blue) ends about 1.0 m off the reference against rigid's 0.72 m and passive's 0.36 m, which is the 85% cross-track penalty in the table. The commanded path (dashed) is not horizontal because the reference is seeded from the robot's randomised initial heading, so the controller is tracking a slightly rotated line. Note also that none of the three converges back onto it — the path loop reduces the residual from the 2.3 m of the open-loop version (see Errors item 8) but does not eliminate it.*
 
 ![Contact sequence diagram with one row per foot, dark bars marking ground contact, showing a regular alternating diagonal trot pattern.](docs/media/gait_straight_1.0.png)
 
@@ -129,15 +148,15 @@ This is not "the spine helps a little". It is three mechanically different trunk
 
 | variant | turn rate (rad/s) | vs rigid | cross-track (m) | cost of transport |
 |---|---|---|---|---|
-| spine | **0.7640 ± 0.0011** | **+6.07%** | 0.291 ± 0.005 | 2.2395 ± 0.0035 |
+| spine | **0.7788 ± 0.0010** | **+8.12%** | 0.252 ± 0.005 | **2.1290 ± 0.0024** |
 | rigid | 0.7203 ± 0.0016 | — | 0.247 ± 0.003 | 2.2010 ± 0.0090 |
 | passive | 0.6717 ± 0.0013 | −6.75% | **0.232 ± 0.006** | 2.3005 ± 0.0099 |
 
-Commanded yaw rate was 0.8 rad/s; all three undershoot. The active spine undershoots least.
+Commanded yaw rate was 0.8 rad/s; all three undershoot. The active spine undershoots least, and does so 3.3% more cheaply than rigid.
 
 The passive spine being *worse* than rigid is the load-bearing observation. Compliance alone does not help turning — it hurts. Whatever the spine is doing, it is doing it with its motors.
 
-But the spine turns faster and tracks *worse*: cross-track error is 17.8% higher than rigid. It is overshooting the commanded circle, not following it more accurately.
+Unlike straight-line running, turning costs the spine nothing in tracking: cross-track is 0.252 against rigid's 0.247, a 2.2% difference that is barely outside the seed spread. The lateral disturbance the undulation injects is small next to the commanded yaw.
 
 ![Top-down trajectory plot for the 0.8 rad/s turn command. A dashed grey commanded circle is shown with three robot tracks, all of which trace circles larger than commanded, with the spine track tighter than rigid but still outside the reference.](docs/media/trajectory_turn_0.8.png)
 
@@ -152,44 +171,49 @@ The spine's yaw joint holds a near-constant −16° offset during a turn rather 
 | configuration | turn rate (rad/s) | vs rigid | spine yaw bias | spine yaw peak-to-peak |
 |---|---|---|---|---|
 | rigid | 0.720 | — | — | — |
-| spine: full (bias + undulation) | 0.764 | +6.1% | −16.09° | 3.06° |
-| **spine: static bias only** | **0.766** | **+6.3%** | −16.11° | 0.82° |
-| **spine: undulation only** | **0.685** | **−4.9%** | −0.10° | 2.96° |
+| spine: full (bias + undulation) | **0.779** | **+8.1%** | −16.12° | 3.33° |
+| **spine: static bias only** | **0.758** | **+5.2%** | −16.13° | 0.86° |
+| **spine: undulation only** | **0.630** | **−12.6%** | −0.12° | 3.04° |
 | spine: held neutral | 0.674 | −6.4% | −0.15° | 0.93° |
 | passive spring | 0.672 | −6.7% | −0.15° | 0.96° |
 
-**The static bias alone reproduces 104% of the advantage. The undulation alone is 4.9% worse than rigid.**
+**The static bias alone reproduces 64% of the advantage. The undulation alone is 12.6% worse than rigid** — worse even than holding the spine still.
 
-The spine is functioning as a steering joint — bending the body into the turn and holding it there, the way an articulated bus or a tractor-trailer steers. That is a legitimate engineering result and a real use for a spine DOF. It is not the mechanism the biological argument proposes, and the oscillatory flexion that argument is built on is actively harmful here.
+The two do not add. Undulation on its own is strongly negative, yet full (bias + undulation) at 0.779 beats bias-alone at 0.758. The remaining 36% therefore comes from an interaction: the oscillation is useful only once the trunk is already bent into the turn, and harmful otherwise. That is a real coupling, not a second independent mechanism.
+
+The dominant term remains articulated steering — bending the body into the turn and holding it there, the way a bus or tractor-trailer steers. That is a legitimate use for a spine DOF, and it is not the mechanism the biological argument proposes.
 
 ![Time series of the three spine joint angles during a turn, showing spine yaw holding a roughly constant negative offset near -16 degrees with small ripple, while pitch and roll oscillate at low amplitude around zero.](docs/media/spine_angles_turn_0.8.png)
 
-*Spine joint angles during the turn. The claim rests on the blue trace: spine yaw sits at a sustained offset rather than oscillating about zero. Pitch and roll do oscillate, at a few degrees — and the undulation-only row above shows that contribution is negative.*
+*Spine joint angles during the turn. Two things to look at. The blue trace — spine yaw — settles to a sustained −16° offset within 0.6 s and oscillates about that, rather than about zero: that offset is the articulated-steering term. The red trace — spine pitch — is visibly asymmetric, reaching further below zero than above, which is the corrected flexion-dominant waveform. Before the fix described in Errors item 10, that trace was asymmetric the other way.*
 
-The realised sagittal flexion:extension ratio reached 0.43–0.66 against a commanded 2.0, so the asymmetric waveform is heavily attenuated by body loads back-driving the joint. The asymmetry reaches the setpoint but only partly reaches the joint.
+The realised sagittal flexion:extension ratio is 2.06 ± 0.01 at the 1.0 m/s command and 2.37 ± 0.04 at 2.0 m/s, against a commanded 2.0 — so the asymmetry reaches the joint essentially intact, with no meaningful attenuation. Sign convention was verified against the model rather than assumed: setting `spine_pitch` to −0.4 rad puts the tail base at z = 0.297 m and +0.4 rad puts it at z = 0.516 m, against 0.408 m at neutral, so negative `spine_pitch` lowers the hind end and is flexion.
+
+An earlier version of this section reported 0.43–0.66 and called it attenuation. A ratio below 1.0 cannot be attenuation — it means the joint extends further than it flexes. That was the symptom of the inverted waveform described in [Errors](#errors-found-and-corrected), item 10.
 
 ### Speed tracking
 
 | command | variant | commanded (m/s) | achieved (m/s) | error (m/s) |
 |---|---|---|---|---|
-| straight | spine | 1.0 | 0.9331 ± 0.0003 | −0.067 |
+| straight | spine | 1.0 | 0.9532 ± 0.0002 | −0.047 |
 | straight | rigid | 1.0 | 0.9305 ± 0.0003 | −0.070 |
 | straight | passive | 1.0 | 0.9341 ± 0.0001 | −0.066 |
-| straight | spine | 2.0 | 1.9600 ± 0.0064 | −0.040 |
+| straight | spine | 2.0 | 1.9980 ± 0.0046 | −0.002 |
 | straight | rigid | 2.0 | 1.9719 ± 0.0105 | −0.028 |
 | straight | passive | 2.0 | 1.9701 ± 0.0139 | −0.030 |
-| turn | spine | 1.0 | 0.8329 ± 0.0016 | −0.167 |
+| turn | spine | 1.0 | 0.8710 ± 0.0007 | −0.129 |
 | turn | rigid | 1.0 | 0.8512 ± 0.0049 | −0.149 |
+| turn | passive | 1.0 | 0.8135 ± 0.0039 | −0.187 |
 
-Commanded speeds are tracked to within 7% at 1.0 m/s and 2% at 2.0 m/s, so the configuration labels mean what they say. Under a turn command all variants lose about 17% of commanded speed, which is expected — turning costs forward progress.
+Commanded speeds are tracked to within 7% at 1.0 m/s and 1.5% at 2.0 m/s, so the configuration labels mean what they say. Under a turn command all variants lose 13–19% of commanded speed, which is expected — turning costs forward progress. The residual shortfall is listed in [Limitations](#what-this-does-and-does-not-show).
 
 ![Forward speed against time at the 2.0 m/s command, showing the three variants converging to and holding a speed close to the commanded value marked by a dashed reference line.](docs/media/speed_straight_2.0.png)
 
-*Forward speed at the 2.0 m/s command. Look at where the traces settle relative to the dashed commanded line, and at how little separates the three variants — this is the same null result as the table, in time-series form.*
+*Forward speed at the 2.0 m/s command. Look at where the traces settle relative to the dashed commanded line, and at how closely the three variants track together — the spine's 1.79% advantage is real but is not visible at this scale.*
 
 ## What this does and does not show
 
-**Shows.** Under a tuned CPG controller with closed-loop speed and path tracking, on this robot: an active 3-DOF spine gives no straight-line benefit over a rigid trunk at either tested speed; a passive compliant spine gives no benefit either, so the null is not a control-authority failure; the spine's 6.07% turning advantage is real, requires actuation, and is 104% attributable to a static yaw bias; oscillatory spine undulation is measurably harmful in turning and neutral-to-costly in straight running.
+**Shows.** Under a tuned CPG controller with closed-loop speed and path tracking, on this robot: an active 3-DOF spine gives a small straight-line gain over a rigid trunk (+0.99% at 1.0 m/s, +1.79% at 2.0 m/s) that a passive compliant spine does not reproduce (+0.25%, +0.21%), so the benefit requires actuation rather than compliance; the gain is bought with 77–85% worse cross-track error at roughly neutral energy cost; the spine's 8.12% turning advantage is real, also requires actuation, and is 64% attributable to a static yaw bias with the remainder coming from an interaction that only appears once the trunk is already bent; and the direction of the flexion asymmetry matters an order of magnitude more than its presence, with the anti-biological direction costing 7–11%.
 
 **Does not show.** That an active spine is useless in general. Specifically:
 
@@ -198,7 +222,8 @@ Commanded speeds are tracked to within 7% at 1.0 m/s and 2% at 2.0 m/s, so the c
 - **CPG, not learned control.** This is the central limitation. S-Cheetah's claim is about learned policies. A fixed CPG cannot co-adapt gait timing, footfall placement and spine phase together, and that coupling is where a spine would most plausibly pay off. This study does not refute their result; it establishes that the effect does not appear under hand-designed control.
 - **Trot only.** The gait is a trot. A bounding or galloping gait loads the sagittal spine very differently, and that is the gait the biological argument is actually about. `bound` is implemented but showed continuous yaw instability (−7.72°/s) and was not used for the comparison.
 - **Simulation only, no hardware.** Same limitation S-Cheetah has. Contact modelling, actuator dynamics and structural compliance are all idealised. No claim here transfers to a physical robot without validation.
-- **Tracking trade-off unresolved.** The spine turns 6.07% faster while tracking the commanded circle 17.8% worse. Whether that is a net benefit depends on whether you want yaw authority or path accuracy, and this study does not settle which matters.
+- **Tracking trade-off unresolved.** The spine's straight-line speed gain of 1–2% comes with 77–85% worse cross-track error, because the undulating trunk injects a lateral disturbance every cycle. Whether that is a net benefit depends entirely on whether the application values speed or path accuracy, and this study does not settle which matters. It is also possible that a path controller tuned specifically for an undulating trunk would recover most of the tracking loss; the one used here was tuned on the rigid variant.
+- **Commanded speed is not reached exactly.** The PI speed loop leaves a systematic steady-state shortfall: −6.6 to −7.0% at a 1.0 m/s command, −1.4 to −2.0% at 2.0 m/s, and −14.9 to −18.7% under a turn command. The error is consistent across variants, so it does not bias the comparison, but "1.0 m/s" means 0.93 m/s and absolute speeds should be read with that in mind. The residual is integral-limited rather than authority-limited; a longer episode or a higher `ki_speed` would reduce it at the cost of stability margin.
 
 ## Errors found and corrected
 
@@ -221,6 +246,14 @@ Every result above was produced by code that had, at some point, a defect produc
 **8. Lateral drift that was being reported as steering quality.** The rigid variant drifted 2.3 m laterally over 10 m on a straight command, making cross-track error a measure of that defect rather than of steering. Root-caused to a one-time yaw impulse at gait onset: `yaw(t)` is flat until 0.6 s, swings to −13.6° by 1.8 s, then holds, with a late-time rate of only −0.66°/s. Confirmed by mirroring the left/right phase assignment, which flipped the drift exactly (−2.27 m → +2.19 m), and by the `walk` gait — where feet land one at a time — showing +0.37°. A secondary contributor was the tail, which has actuators the controller simply never commanded; holding it cut the late-time drift rate from −0.66 to −0.08°/s. Fixed by adding cross-track position feedback and holding the tail (`d37d185`). Straight-line cross-track fell from 1.46–1.77 m to 0.44–0.52 m.
 
 **9. A sanity check that cried wolf.** The joint-stiffness stability bound was evaluated against the *global minimum* armature, pairing a stiff spine spring with a leg's 0.01 armature and producing a bound 20× too small, and it ignored the integrator. It fired on every healthy passive-variant run. A warning that fires on correct models is worse than no warning, because it teaches you to ignore the ones that matter. `71f607d`.
+
+**10. The flexion asymmetry ran backwards for the entire first phase of the study.** The single most consequential error here, and it was published before it was caught. `asymmetric_wave(ratio=2)` produces a wave peaking at −1.0 and +0.5, so its large excursion is negative. A separate `flexion_sign` multiplier, defaulting to `-1.0`, then negated it — making the *large* excursion positive. Since flexion is negative `spine_pitch` (verified against the model: −0.4 rad puts the tail base at z = 0.297 m, +0.4 rad at z = 0.516 m, against 0.408 m neutral), the shipped default commanded an **extension-dominant** spine at a realised ratio of 0.50 while the parameter name claimed flexion-dominance at 2.0.
+
+The symptom was in the README for a full revision: a realised ratio of 0.43–0.66 against a commanded 2.0, which I wrote up as attenuation. It cannot be. Attenuation lands between 1.0 and the commanded value; below 1.0 means the asymmetry is inverted. The number was diagnostic and I misread it as noise.
+
+The 96-point parameter search did explore both signs and selected `-1.0` — it was not broken, it correctly found that the anti-biological waveform performed better at the phase it was searching, and the default then shipped that under a misleading name. Fixed by deleting `flexion_sign` entirely and letting `flexion_ratio` span both directions (2.0 flexion-dominant, 1.0 symmetric, 0.5 extension-dominant); the flag was redundant anyway, since negating the wave is identical to inverting the ratio and shifting phase by 0.5, and phase was already swept.
+
+Consequences, all re-measured: the straight-line result changed from "no effect" (+0.02% / −0.30%) to a real gain (+0.99% / +1.79%); the turning advantage from +6.07% to +8.12%; the static-bias share of the turning mechanism from 104% to 64%; and cost of transport from 2% worse than rigid to neutral-or-better. The controlled ratio comparison that now anchors the straight-line section — showing the anti-biological direction costs 11.4% — only exists because of this bug.
 
 ## Reproducing
 
@@ -303,8 +336,9 @@ If this study is useful, cite it as a negative result on CPG-controlled spine lo
   author = {Alharbi, Muhannad},
   title  = {Does an active spine help a quadruped run? A controlled MuJoCo study},
   note   = {Independent CPG-based study of active, passive and rigid quadruped
-            trunks. Finds no straight-line benefit and attributes the turning
-            benefit to articulated steering rather than spine undulation.},
+            trunks. Finds a 1-2% straight-line speed gain at 77-85% worse path
+            tracking, and attributes most of the turning benefit to articulated
+            steering rather than to spine undulation.},
   year   = {2026},
   url    = {https://github.com/cl0udz1/Cheetah-Spine-Experiment}
 }
