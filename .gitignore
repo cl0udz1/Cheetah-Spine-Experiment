@@ -1,7 +1,12 @@
 .venv/
 __pycache__/
 *.pyc
-results/
-media/
-runs/
 *.zip
+
+# Generated experiment output. A full render run is ~17 MB and is cheap to
+# regenerate, so it is not tracked. Anchored to the repo root so that
+# docs/media/ -- the curated subset the README embeds, built by
+# tools/make_readme_media.py -- is committed normally.
+/results/
+/media/
+/runs/
