@@ -23,6 +23,8 @@ METRIC_KEYS = (
     "peak_speed_mps",
     "peak_speed_raw_mps",
     "mean_fwd_speed_mps",
+    "steady_fwd_speed_mps",
+    "speed_tracking_error_mps",
     "ground_speed_mps",
     "net_progress_speed_mps",
     "turn_rate_mean_radps",
@@ -121,6 +123,8 @@ def compute_metrics(log: RolloutLog, total_mass: float) -> dict:
     smoothed = _moving_average(log.fwd_speed, win)
     peak = float(np.max(smoothed)) if smoothed.size else float("nan")
     peak_raw = float(np.max(log.fwd_speed))
+    tail_start = int(0.4 * len(log.fwd_speed))
+    steady = float(np.mean(log.fwd_speed[tail_start:]))
 
     xy = log.pos[:, :2]
     seg = np.linalg.norm(np.diff(xy, axis=0), axis=1)
@@ -172,6 +176,11 @@ def compute_metrics(log: RolloutLog, total_mass: float) -> dict:
         "peak_speed_mps": peak,
         "peak_speed_raw_mps": peak_raw,
         "mean_fwd_speed_mps": float(np.mean(log.fwd_speed)),
+        # Steady state = the last 60% of the run, past the ramp and the
+        # feedback loops' settling. speed_tracking_error is the number that
+        # decides whether a config label like "straight_1.0" is honest.
+        "steady_fwd_speed_mps": steady,
+        "speed_tracking_error_mps": steady - log.command.vx,
         "ground_speed_mps": ground_speed,
         "net_progress_speed_mps": net_progress / duration if duration > 0 else float("nan"),
         "turn_rate_mean_radps": float(np.mean(log.yaw_rate)),
