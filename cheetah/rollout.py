@@ -20,6 +20,16 @@ from .stability import StabilityMonitor, StabilityReport, warn_loudly
 LEGS = ("fl", "fr", "rl", "rr")
 
 
+#: Initial-state perturbation scale. The CPG is deterministic, so without this
+#: every seed returns a bit-identical rollout and averaging over seeds would be
+#: theatre. These are small compared to the stance pose but large enough to
+#: separate a robust gait from one balanced on a knife edge.
+INIT_JOINT_NOISE = 0.03    # rad, per actuated joint
+INIT_VEL_NOISE = 0.05      # m/s and rad/s, on the trunk freejoint
+INIT_HEIGHT_NOISE = 0.005  # m, drop height
+INIT_YAW_NOISE = 0.02      # rad, initial heading
+
+
 @dataclass
 class Command:
     """What the robot was asked to do. Also defines the reference path."""
@@ -82,6 +92,40 @@ def _rpy(quat: np.ndarray) -> tuple[float, float, float]:
     return roll, pitch, yaw
 
 
+def _perturb_initial_state(model: mujoco.MjModel, data: mujoco.MjData, seed: int) -> None:
+    """
+    Randomise the initial state so different seeds are genuinely different runs.
+
+    Perturbs only hinge joints (never the freejoint quaternion component-wise,
+    which would produce a non-unit quaternion); heading is rotated properly
+    about +z. Seed 0 is included in the randomisation rather than special-cased
+    as "the clean run" -- a metric that only holds at one exact initial state
+    is not a result.
+    """
+    rng = np.random.default_rng(seed)
+
+    for j in range(model.njnt):
+        if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_HINGE:
+            adr = int(model.jnt_qposadr[j])
+            lo, hi = model.jnt_range[j]
+            q = data.qpos[adr] + rng.normal(0.0, INIT_JOINT_NOISE)
+            if model.jnt_limited[j]:
+                q = float(np.clip(q, lo, hi))
+            data.qpos[adr] = q
+
+    data.qpos[2] += abs(rng.normal(0.0, INIT_HEIGHT_NOISE))
+
+    # Rotate the starting heading about +z, keeping the quaternion normalised.
+    psi = rng.normal(0.0, INIT_YAW_NOISE)
+    dq = np.array([np.cos(psi / 2.0), 0.0, 0.0, np.sin(psi / 2.0)])
+    out = np.zeros(4)
+    mujoco.mju_mulQuat(out, dq, data.qpos[3:7])
+    data.qpos[3:7] = out
+
+    data.qvel[0:6] = rng.normal(0.0, INIT_VEL_NOISE, 6)
+    mujoco.mj_forward(model, data)
+
+
 def run_rollout(
     model: mujoco.MjModel,
     controller,
@@ -105,6 +149,7 @@ def run_rollout(
     """
     data = mujoco.MjData(model)
     set_home_pose(model, data)
+    _perturb_initial_state(model, data, seed)
 
     dt = model.opt.timestep
     n_settle = int(round(settle / dt))
