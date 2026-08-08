@@ -165,7 +165,10 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
             for v in cfg.variants:
                 model, info, _ = models[v]
                 params = cfg.gait_params(v)
-                controller = CPGController(model, params)
+                # The command must reach the controller, not only the metrics'
+                # reference path -- otherwise every command produces an
+                # identical gait and the sweep silently compares nothing.
+                controller = CPGController(model, params, command=command)
 
                 want_video = cfg.render and render_ok and seed == cfg.seeds[0]
                 recorder = render.Recorder(
@@ -208,11 +211,12 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
 
                 status = "DIVERGED" if log.diverged else "ok"
                 print(f"   {v:6s} seed={seed} [{status:8s}] "
-                      f"peak={m['peak_speed_mps']:6.3f} m/s  "
-                      f"mean={m['mean_speed_mps']:6.3f}  "
-                      f"CoT={m['cost_of_transport']:7.3f}  "
-                      f"xtrack={m['cross_track_rms_m']:6.3f} m  "
-                      f"clip={m['clip_fraction']:.2f}")
+                      f"peak={m['peak_speed_mps']:6.3f}  "
+                      f"net={m['net_progress_speed_mps']:6.3f} m/s  "
+                      f"CoT={m['cost_of_transport']:6.2f}  "
+                      f"xtrack={m['cross_track_rms_m']:5.3f} m  "
+                      f"fell={m['fell_over']:.0f}  "
+                      f"clip={m['clip_fraction']:.3f}")
                 print(f"          stability: {log.stability.summary()}")
 
                 if seed == cfg.seeds[0]:
@@ -324,9 +328,24 @@ def summarise(rows: list[dict], keys: tuple[str, ...] = (
         if r["variant"] not in variants:
             variants.append(r["variant"])
 
+    #: Column headings short enough to fit but still unambiguous.
+    short = {
+        "peak_speed_mps": "peak_speed",
+        "peak_speed_raw_mps": "peak_raw",
+        "mean_fwd_speed_mps": "mean_fwd",
+        "ground_speed_mps": "ground_spd",
+        "net_progress_speed_mps": "net_progress",
+        "turn_rate_mean_radps": "turn_rate",
+        "cost_of_transport": "cost_transp",
+        "cross_track_rms_m": "cross_track",
+        "path_error_rms_m": "path_err",
+        "fell_over": "fell_over",
+    }
+    n_seeds = len({r["seed"] for r in rows})
     lines = []
-    width = 15
-    header = f"{'command':<16}{'variant':<9}" + "".join(f"{k.split('_')[0][:12]:>{width}}" for k in keys) + f"{'n_div':>7}"
+    width = 17 if n_seeds > 1 else 14
+    header = f"{'command':<16}{'variant':<9}" + "".join(
+        f"{short.get(k, k)[:width - 1]:>{width}}" for k in keys) + f"{'n_div':>7}"
     lines.append(header)
     lines.append("-" * len(header))
     for c in ordered_cmds:
@@ -339,6 +358,13 @@ def summarise(rows: list[dict], keys: tuple[str, ...] = (
             cells = ""
             for k in keys:
                 vals = [r[k] for r in good if r[k] == r[k]]  # drop NaN
-                cells += f"{np.mean(vals):>{width}.4f}" if vals else f"{'--':>{width}}"
+                if not vals:
+                    cells += f"{'--':>{width}}"
+                elif n_seeds > 1:
+                    # A mean over seeds without its spread is not interpretable;
+                    # most of the differences here are inside one sigma.
+                    cells += f"{np.mean(vals):>{width - 7}.3f}+-{np.std(vals):<5.3f}"
+                else:
+                    cells += f"{np.mean(vals):>{width}.4f}"
             lines.append(f"{c:<16}{v:<9}{cells}{ndiv:>7}")
     return "\n".join(lines)
