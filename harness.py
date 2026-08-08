@@ -86,7 +86,7 @@ DEFAULT_GAIT = {
     # 2.0 is the biological flexion-dominant case. Flexion is NEGATIVE
     # spine_pitch; see asymmetric_wave(). The removed flexion_sign parameter
     # defaulted to -1.0 and inverted this, so every undulation result before
-    # commit 0e7cb0d was measured on an extension-dominant spine.
+    # commit 70d2abe was measured on an extension-dominant spine.
     "flexion_ratio": 2.0,
     # Turning gains, also selected on the rigid model. These hit +0.819 rad/s
     # against a commanded +0.8. The tail contributes almost nothing here
