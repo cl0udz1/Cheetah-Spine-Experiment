@@ -299,20 +299,21 @@ docs/media/       the curated figure set this README embeds (~4.2 MB)
 If this study is useful, cite it as a negative result on CPG-controlled spine locomotion:
 
 ```bibtex
-@software{spine_quadruped_study,
+@software{alharbi2026spine,
+  author = {Alharbi, Muhannad},
   title  = {Does an active spine help a quadruped run? A controlled MuJoCo study},
   note   = {Independent CPG-based study of active, passive and rigid quadruped
             trunks. Finds no straight-line benefit and attributes the turning
             benefit to articulated steering rather than spine undulation.},
   year   = {2026},
-  url    = {https://github.com/USER/REPO}
+  url    = {https://github.com/cl0udz1/Cheetah-Spine-Experiment}
 }
 ```
 
-Replace the URL before publishing. The works this study responds to are cited in [Background](#background).
+The works this study responds to are cited in [Background](#background).
 
 ## Licence
 
-No `LICENSE` file is committed yet. Add one before publishing this repository — MIT or Apache-2.0 are the conventional choices for work of this kind. Until then, no licence is granted.
+[MIT](LICENSE). Copyright (c) 2026 Muhannad Alharbi.
 
 `spine_quadruped.xml` and `run.py` are the original starter files, preserved unmodified in commit `c08cbf5` for reference; `run.py` is superseded by `harness.py` and its free-fall test is corrected in `harness.py freefall` (the original drove the spine on the spine variant and drove nothing on the rigid variant, so its 0° result measured the absence of a command rather than the absence of a capability).
