@@ -22,8 +22,9 @@ G = 9.81
 METRIC_KEYS = (
     "peak_speed_mps",
     "peak_speed_raw_mps",
-    "mean_speed_mps",
-    "net_displacement_speed_mps",
+    "mean_fwd_speed_mps",
+    "ground_speed_mps",
+    "net_progress_speed_mps",
     "turn_rate_mean_radps",
     "turn_rate_peak_radps",
     "cost_of_transport",
@@ -124,8 +125,12 @@ def compute_metrics(log: RolloutLog, total_mass: float) -> dict:
     xy = log.pos[:, :2]
     seg = np.linalg.norm(np.diff(xy, axis=0), axis=1)
     distance = float(seg.sum())
-    net_disp = float(np.linalg.norm(xy[-1] - xy[0]))
-    mean_speed = distance / duration if duration > 0 else float("nan")
+    # Signed forward progress: net displacement projected on the STARTING
+    # heading. An unsigned norm here scores a robot running smoothly backwards
+    # as a fast robot, which is how a sign error in the gait survives a sweep.
+    h0 = np.array([np.cos(log.yaw[0]), np.sin(log.yaw[0])])
+    net_progress = float(np.dot(xy[-1] - xy[0], h0))
+    ground_speed = distance / duration if duration > 0 else float("nan")
 
     energy = float(np.sum(log.power) * dt)
     mean_power = float(np.mean(log.power))
@@ -166,8 +171,9 @@ def compute_metrics(log: RolloutLog, total_mass: float) -> dict:
     out = {
         "peak_speed_mps": peak,
         "peak_speed_raw_mps": peak_raw,
-        "mean_speed_mps": mean_speed,
-        "net_displacement_speed_mps": net_disp / duration if duration > 0 else float("nan"),
+        "mean_fwd_speed_mps": float(np.mean(log.fwd_speed)),
+        "ground_speed_mps": ground_speed,
+        "net_progress_speed_mps": net_progress / duration if duration > 0 else float("nan"),
         "turn_rate_mean_radps": float(np.mean(log.yaw_rate)),
         "turn_rate_peak_radps": float(np.max(np.abs(log.yaw_rate))),
         "cost_of_transport": cot,
