@@ -45,13 +45,27 @@ TRACK_WIDTH = 0.18
 
 def asymmetric_wave(phase, ratio: float = 2.0):
     """
-    Unit-amplitude oscillation whose negative (flexion) excursion is `ratio`
-    times its positive (extension) excursion.
+    Unit-amplitude oscillation whose negative excursion is `ratio` times its
+    positive excursion. This is the spine_pitch target shape directly, with no
+    sign flip applied anywhere downstream.
 
-    A real cheetah's spine flexes roughly twice as far as it extends, so a
-    symmetric sinusoid is the wrong prior. At ratio=2 this peaks at -1.0 in
-    flexion and +0.5 in extension. At ratio=1 it degenerates to sin(), which
-    is the control condition for testing whether the asymmetry matters at all.
+    SIGN CONVENTION, verified against the model rather than assumed:
+    setting spine_pitch to -0.4 rad puts the tail base at z=0.297 and +0.4 rad
+    puts it at z=0.516, against 0.408 at neutral. Negative spine_pitch lowers
+    the hind end, which is the gathered phase -- so NEGATIVE spine_pitch is
+    FLEXION and positive is extension. metrics.py uses the same convention.
+
+    A real cheetah's spine flexes roughly twice as far as it extends, so:
+      ratio = 2.0  flexion-dominant, the biological case (peaks -1.0 / +0.5)
+      ratio = 1.0  symmetric sin(), the control for whether asymmetry matters
+      ratio = 0.5  extension-dominant, the anti-biological control
+
+    The `ratio` parameter spans both directions, so no separate sign flag is
+    needed. An earlier version had a `flexion_sign` multiplier on top of this,
+    which at its shipped value of -1.0 inverted the waveform and commanded an
+    extension-dominant spine while the parameter name claimed otherwise. It was
+    also redundant: negating this wave is identical to inverting `ratio` and
+    shifting `phase` by 0.5, and phase is already swept.
     """
     s = np.sin(2.0 * np.pi * np.asarray(phase, dtype=float))
     return np.where(s < 0.0, s, s / ratio)
@@ -78,8 +92,10 @@ class GaitParams:
     spine_pitch_amp: float = 0.0 # rad, sagittal flexion/extension
     spine_roll_amp: float = 0.0  # rad
     spine_phase: float = 0.0     # phase lead of spine over the front legs
-    flexion_ratio: float = 2.0   # flexion : extension excursion
-    flexion_sign: float = -1.0   # which sign of spine_pitch counts as flexion
+    #: Flexion:extension excursion ratio of the sagittal spine. 2.0 is the
+    #: biological case, 1.0 is a symmetric sinusoid, 0.5 runs the asymmetry
+    #: backwards. Flexion is NEGATIVE spine_pitch -- see asymmetric_wave().
+    flexion_ratio: float = 2.0
     spine_freq_mult: float = 1.0 # sagittal spine often runs at 1x gait freq
 
     #: Differential stride between left and right legs, as a fraction of
@@ -354,10 +370,11 @@ class CPGController:
 
         if self.has_spine["spine_pitch"]:
             ph = (base_phase * p.spine_freq_mult + p.spine_phase) % 1.0
-            # The asymmetric part: flexion excursion is `flexion_ratio` times
-            # extension. flexion_sign picks which direction counts as flexion.
+            # asymmetric_wave IS the target shape: negative is flexion. No sign
+            # flip here -- one existed, defaulted to -1.0, and silently ran the
+            # asymmetry backwards for the whole first phase of this study.
             w = float(asymmetric_wave(ph, p.flexion_ratio))
-            tgt["spine_pitch"] = p.flexion_sign * p.spine_pitch_amp * w * ramp
+            tgt["spine_pitch"] = p.spine_pitch_amp * w * ramp
 
         if self.has_spine["spine_roll"]:
             ph = (base_phase * p.spine_freq_mult + p.spine_phase + 0.25) % 1.0

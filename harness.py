@@ -41,18 +41,23 @@ import numpy as np  # noqa: E402
 #: so this operating point is narrow. kd_leg=3.0 falls over every time; 6.0 is
 #: doing real work here, not decoration.
 #:
-#: Spine undulation parameters are the BEST of a 96-point search over amplitude
-#: x phase x frequency-multiple x flexion sign, run on the spine model at 4
-#: seeds. This deliberately gives the spine variant the advantage of tuning that
-#: the rigid variant cannot use, so the headline comparison shows the spine at
-#: its best rather than at a strawman setting.
+#: Spine undulation parameters are the best of a 36-point search over amplitude
+#: x phase x flexion ratio on the CORRECTED waveform, scored by worst case
+#: across two commanded speeds and requiring zero falls at both. This
+#: deliberately gives the spine variant tuning the rigid variant cannot use, so
+#: the comparison shows the spine at its best rather than at a strawman setting.
 #:
-#: What that search found: only 6 of 96 spine configurations beat the rigid
-#: baseline at all, and the winner does so by +3.7% (1.679+-0.002 vs
-#: 1.620+-0.022 m/s). The optimum amplitude is 0.05 rad -- under 3 deg
-#: commanded, ~4.7 deg realised -- which is an order of magnitude less spine
-#: travel than a galloping cheetah uses. At 0.30 rad the robot falls on every
-#: seed. See `harness.py spine-sweep`.
+#: Only 9 of 36 configurations avoided falling at both speeds. The optimum
+#: amplitude is 0.05 rad -- under 3 deg commanded -- and at 0.25 rad the robot
+#: falls on essentially every seed and phase.
+#:
+#: Holding amplitude and phase fixed and varying only the asymmetry direction
+#: gives a clean monotone ordering at 8 seeds, against rigid:
+#:      ratio 2.0 (flexion-dominant, biological)  +0.99% / +1.79%
+#:      ratio 1.0 (symmetric sinusoid)            -1.59% / +1.65%
+#:      ratio 0.5 (extension-dominant)           -11.44% / -7.20%
+#: So the direction of the asymmetry matters far more than its presence, and
+#: running it backwards is expensive. See `harness.py spine-sweep`.
 DEFAULT_GAIT = {
     "gait": "trot",
     "freq": 2.6,
@@ -76,9 +81,12 @@ DEFAULT_GAIT = {
     "kd_spine": 12.0,
     "spine_pitch_amp": 0.05,
     "spine_yaw_amp": 0.0375,
-    "spine_phase": 0.375,
+    "spine_phase": 0.25,
     "spine_freq_mult": 1.0,
-    "flexion_sign": -1.0,
+    # 2.0 is the biological flexion-dominant case. Flexion is NEGATIVE
+    # spine_pitch; see asymmetric_wave(). The removed flexion_sign parameter
+    # defaulted to -1.0 and inverted this, so every undulation result before
+    # commit 0e7cb0d was measured on an extension-dominant spine.
     "flexion_ratio": 2.0,
     # Turning gains, also selected on the rigid model. These hit +0.819 rad/s
     # against a commanded +0.8. The tail contributes almost nothing here

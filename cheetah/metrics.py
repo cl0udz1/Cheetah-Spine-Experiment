@@ -164,9 +164,16 @@ def compute_metrics(log: RolloutLog, total_mass: float) -> dict:
 
     # Realised flexion:extension ratio of the sagittal spine. Confirms the
     # asymmetry actually reached the joint rather than just the setpoint.
+    #
+    # Flexion is NEGATIVE spine_pitch, verified against the model: -0.4 rad
+    # puts the tail base at z=0.297 and +0.4 rad at z=0.516 against 0.408 at
+    # neutral, so negative pitch lowers the hind end (the gathered phase).
+    # A value below 1.0 here means the asymmetry is running BACKWARDS, not
+    # that it is attenuated -- attenuation would land between 1.0 and the
+    # commanded ratio.
     pitch_col = sa[:, 1] if sa.shape[0] else np.array([])
     if pitch_col.size and np.isfinite(pitch_col).any():
-        flex = float(-np.nanmin(pitch_col))   # flexion is negative by convention
+        flex = float(-np.nanmin(pitch_col))
         ext = float(np.nanmax(pitch_col))
         ratio = flex / ext if ext > 1e-6 else float("nan")
     else:
