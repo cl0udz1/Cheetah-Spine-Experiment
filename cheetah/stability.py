@@ -190,17 +190,41 @@ def check_model_sanity(model: mujoco.MjModel, label: str = "") -> list[str]:
     issues: list[str] = []
     dt = model.opt.timestep
 
-    # Explicit stability bound for the stiffest spring-damper in the model.
-    # For an undamped stiffness k on inertia m, explicit integration needs
-    # dt < 2*sqrt(m/k). implicitfast relaxes this but it still flags absurdity.
-    if model.njnt and np.any(model.jnt_stiffness > 0):
-        k = model.jnt_stiffness.max()
-        m_eff = max(float(model.dof_armature.min()), 1e-6)
-        bound = 2.0 * np.sqrt(m_eff / k)
-        if dt > bound:
+    # Explicit stability bound for each spring-loaded joint: dt < 2*sqrt(I/k).
+    #
+    # Two corrections over the naive version. First, the effective inertia is
+    # the joint's OWN armature plus the inertia of the subtree it swings, not
+    # the global minimum armature -- pairing a stiff spine spring with a leg's
+    # armature understates the bound by orders of magnitude and produces a
+    # warning on every healthy run. Second, implicit and implicitfast integrate
+    # joint stiffness and damping implicitly, so the explicit bound does not
+    # apply; there we only flag the far looser case of a spring period shorter
+    # than a single timestep, which no integrator can resolve.
+    implicit = model.opt.integrator in (
+        mujoco.mjtIntegrator.mjINT_IMPLICIT,
+        mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+    )
+    for j in range(model.njnt):
+        k = float(model.jnt_stiffness[j])
+        if k <= 0:
+            continue
+        dofadr = int(model.jnt_dofadr[j])
+        bid = int(model.jnt_bodyid[j])
+        # Subtree inertia about the joint, roughly: subtree mass times the
+        # square of its extent. body_inertia's largest principal component is a
+        # serviceable stand-in and errs on the small side, so the bound is
+        # conservative.
+        inertia = float(np.max(model.body_inertia[bid])) if bid < model.nbody else 0.0
+        subtree = float(model.body_subtreemass[bid]) if bid < model.nbody else 0.0
+        i_eff = max(float(model.dof_armature[dofadr]) + inertia + 0.01 * subtree, 1e-9)
+        bound = 2.0 * np.sqrt(i_eff / k)
+        limit = bound if not implicit else bound / 10.0
+        if dt > limit:
+            nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j) or f"joint{j}"
             issues.append(
-                f"timestep {dt:g}s exceeds explicit stability bound {bound:.4g}s "
-                f"for max joint stiffness {k:g}"
+                f"timestep {dt:g}s vs spring period bound {bound:.4g}s on {nm!r} "
+                f"(k={k:g}, I_eff~{i_eff:.4g}"
+                + (", implicit integrator" if implicit else "") + ")"
             )
 
     bad_mass = np.where(model.body_mass[1:] <= 0)[0]
