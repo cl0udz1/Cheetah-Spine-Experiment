@@ -84,6 +84,21 @@ DEFAULT_GAIT = {
     # against a commanded +0.8. The tail contributes almost nothing here
     # (0.819 vs 0.813 with it enabled), so it stays off to keep the mechanism
     # minimal and the spine's contribution unambiguous.
+    # Closed-loop tracking. Without these the commanded speed is a label the
+    # robot ignores (commanding 1.0 m/s produced 1.84) and a startup yaw
+    # impulse of ~15 deg is never corrected, which put 2.3 m of lateral offset
+    # into cross-track error and made it a measure of that defect rather than
+    # of steering. Gains are the best zero-fall setting from a sweep at
+    # 1.0/1.5/2.0 m/s; higher kp_lateral tracks tighter at low speed but falls
+    # at 2.0.
+    "closed_loop_speed": True,
+    "closed_loop_heading": True,
+    "kp_heading": 0.8,
+    "kd_heading": 0.12,
+    "kp_lateral": 0.3,
+    "max_yaw_correction": 0.25,
+    "stride_efficiency": 1.9,
+    "hold_tail": True,
     "turn_stride_gain": 0.4,
     "turn_abduct_gain": 0.5,
     # Sign matters more than magnitude here. +0.35 FIGHTS the differential
@@ -119,32 +134,41 @@ def cmd_check(args: argparse.Namespace) -> int:
     print("MODEL VARIANTS")
     print("=" * 74)
     infos = {}
-    for v in ("spine", "rigid"):
-        model, info = build_model(spine=(v == "spine"), xml_path=args.xml)
+    for v in ("spine", "rigid", "passive"):
+        model, info = build_model(variant=v, xml_path=args.xml)
         infos[v] = (model, info)
-        print(f"  {v:6s}: nq={info.nq:3d} nv={info.nv:3d} nu={info.nu:3d} "
-              f"njnt={info.njnt:3d} mass={info.total_mass:.4f} kg")
+        print(f"  {v:8s}: nq={info.nq:3d} nv={info.nv:3d} nu={info.nu:3d} "
+              f"njnt={info.njnt:3d} mass={info.total_mass:.4f} kg"
+              + (f"  spring k={info.spine_stiffness:g} c={info.spine_damping:g}"
+                 if info.spine_stiffness else ""))
         if info.removed_joints:
             print(f"          removed joints: {list(info.removed_joints)}")
             print(f"          removed motors: {list(info.removed_motors)}")
         issues = check_model_sanity(model, label=v)
         print(f"          sanity: {'clean' if not issues else issues}")
 
-    ms, mr = infos["spine"][1], infos["rigid"][1]
-    matched = abs(ms.total_mass - mr.total_mass) < 1e-9
+    ms, mr, mp = infos["spine"][1], infos["rigid"][1], infos["passive"][1]
+    masses = [ms.total_mass, mr.total_mass, mp.total_mass]
+    matched = max(masses) - min(masses) < 1e-9
     print(f"\n  mass-matched  : {matched} "
-          f"({ms.total_mass:.6f} vs {mr.total_mass:.6f} kg)")
+          f"({ms.total_mass:.6f} / {mr.total_mass:.6f} / {mp.total_mass:.6f} kg)")
     print(f"  DOF removed   : {ms.nv - mr.nv} (nv {ms.nv} -> {mr.nv})")
     print(f"  actuators lost: {ms.nu - mr.nu} (nu {ms.nu} -> {mr.nu})")
+    print(f"  passive spine : nv={mp.nv} (same DOF as spine: {mp.nv == ms.nv}), "
+          f"nu={mp.nu} (3 fewer than spine: {mp.nu == ms.nu - 3}), "
+          f"unactuated={mp.spine_unactuated}")
     if ms.nv == mr.nv:
         print("  !! rigid variant has the same DOF count as spine - joint removal FAILED")
+        return 1
+    if mp.nv != ms.nv or mp.nu != ms.nu - 3:
+        print("  !! passive variant is not 'same joints, no motors' - build FAILED")
         return 1
 
     print("\n" + "=" * 74)
     print("STABILITY SHAKEDOWN (5 s, zero torque / full-amplitude random torque)")
     print("=" * 74)
     failed = False
-    for v in ("spine", "rigid"):
+    for v in ("spine", "rigid", "passive"):
         model, _ = infos[v]
         for mode in ("zero", "random"):
             data = mujoco.MjData(model)
@@ -159,7 +183,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                 if not mon.check(i):
                     break
             rep = mon.report()
-            print(f"  {v:6s} ctrl={mode:6s}: {rep.summary()}")
+            print(f"  {v:8s} ctrl={mode:6s}: {rep.summary()}")
             if rep.diverged:
                 warn_loudly(f"{v}/{mode}", rep)
                 failed = True
@@ -226,8 +250,8 @@ def cmd_spine_sweep(args: argparse.Namespace) -> int:
     seeds = tuple(int(s) for s in args.seeds.split(","))
     speeds = [float(v) for v in args.speeds.split(",")]
 
-    spine_model, spine_info = build_model(spine=True, xml_path=args.xml)
-    rigid_model, rigid_info = build_model(spine=False, xml_path=args.xml)
+    spine_model, spine_info = build_model(variant="spine", xml_path=args.xml)
+    rigid_model, rigid_info = build_model(variant="rigid", xml_path=args.xml)
 
     rows = []
     print("=" * 96)
@@ -321,7 +345,7 @@ def cmd_freefall(args: argparse.Namespace) -> int:
 
             # Fresh model per run: zeroing gravity mutates the model in place,
             # and a shared model would leak that into later rows.
-            model, _ = build_model(spine=(variant == "spine"), xml_path=args.xml)
+            model, _ = build_model(variant=variant, xml_path=args.xml)
             model.opt.gravity[:] = [0.0, 0.0, 0.0]
             act = {mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, i): i
                    for i in range(model.nu)}

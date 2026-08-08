@@ -91,6 +91,47 @@ class GaitParams:
     turn_abduct_gain: float = 0.0   # differential abduction per rad/s
     tail_yaw_gain: float = 0.0      # tail yaw bias per rad/s
 
+    #: Closed-loop tracking. With these off the controller is purely open-loop:
+    #: it has no idea how fast it is going or which way it is pointing, so the
+    #: commanded speed is a label rather than a target and a startup yaw impulse
+    #: is never corrected. See closed_loop_speed / closed_loop_heading.
+    closed_loop_speed: bool = False
+    closed_loop_heading: bool = False
+    kp_speed: float = 0.18          # fractional freq change per (m/s) of error
+    ki_speed: float = 0.06          # per (m/s . s)
+    freq_min: float = 0.5           # multiples of nominal freq
+    freq_max: float = 1.8
+    kp_heading: float = 0.8         # rad/s of yaw correction per rad of error
+    kd_heading: float = 0.12        # per (rad/s) of yaw rate error
+    #: Cross-track feedback, rad/s of yaw correction per metre of lateral
+    #: offset from the reference path. Heading feedback alone cannot fix
+    #: cross-track error: driving yaw to the reference heading just makes the
+    #: robot run PARALLEL to the path at whatever offset it already had. Only
+    #: a position term steers it back onto the line.
+    kp_lateral: float = 0.9
+    #: Geometric stride->speed mapping calibration. The naive model
+    #: v = 2*A*LEG_REACH*freq assumes a planted foot with no slip and no body
+    #: pitch; measured throughput is ~1.9x that, so without this the commanded
+    #: speed is wrong by nearly 2x and the closed loop spends its whole range
+    #: correcting a modelling error instead of a disturbance.
+    stride_efficiency: float = 1.9
+    #: Clamp on the heading loop's output. This is NOT a free parameter: the
+    #: correction is fed through turn_abduct_gain into an abduction joint
+    #: limited to +-0.7 rad, and through turn_stride_gain into a stride scale
+    #: of (1 -+ gain*yaw). At gain 0.5/0.4 a clamp of 2.5 commands 1.25 rad of
+    #: abduction (impossible) and drives one side's stride to zero (a fall).
+    #: 0.6 keeps both terms inside their physical range.
+    max_yaw_correction: float = 0.6
+    #: Hold the loops open until the gait has ramped in. Integrating error
+    #: against a robot that has not started walking yet is pure windup.
+    feedback_start: float = 1.0
+
+    #: Hold the tail at neutral. The tail has actuators; leaving it free was an
+    #: oversight, and a free 0.3 kg weighted tail contributes ~30% of the
+    #: uncommanded yaw drift and essentially all of the late-time drift rate.
+    #: (uses kp_tail / kd_tail below for the hold)
+    hold_tail: bool = True
+
     kp_leg: float = 80.0
     kd_leg: float = 2.0
     kp_spine: float = 120.0
@@ -133,26 +174,122 @@ class CPGController:
         self.ctrl_lo = model.actuator_ctrlrange[:, 0].copy()
         self.ctrl_hi = model.actuator_ctrlrange[:, 1].copy()
 
-        # Per-leg stride amplitude from the speed and turn command. Positive
-        # yaw_rate is a left turn (counter-clockwise about +z), so the LEFT
-        # legs must shorten their stride and the right legs lengthen it.
-        a_nom = self.vx / (2.0 * LEG_REACH * max(params.freq, 1e-6))
-        self.leg_amp = {}
-        for leg in LEGS:
-            side = 1.0 if leg in LEFT_LEGS else -1.0
-            scale = 1.0 - side * params.turn_stride_gain * self.yaw_rate
-            a = a_nom * scale
-            self.leg_amp[leg] = float(np.clip(a, -params.hip_amp_max, params.hip_amp_max))
+        # Nominal stride amplitude for the commanded speed. Per-leg amplitudes
+        # are derived from this each step, because with a heading loop the
+        # effective yaw rate changes continuously.
+        self.a_nom = self.vx / (
+            2.0 * LEG_REACH * max(params.freq, 1e-6) * max(params.stride_efficiency, 1e-6)
+        )
 
-        # Which spine joints this variant actually has. The rigid variant has
-        # none, and every spine term below simply never fires.
+        # Which spine joints this variant actually has. The rigid and passive
+        # variants have no spine ACTUATORS, so every spine term below simply
+        # never fires -- for passive, the spring does the work instead.
         self.has_spine = {
             j: (j in self.act) for j in ("spine_yaw", "spine_pitch", "spine_roll")
         }
         self.has_tail = "tail_yaw" in self.act
 
+        # Gait phase is integrated rather than computed as freq*t, because the
+        # speed loop varies the frequency and freq(t)*t is not the phase of a
+        # frequency-modulated oscillator.
+        self.phase = 0.0
+        self._last_t: float | None = None
+        self.freq_scale = 1.0
+        self._speed_integral = 0.0
+        self.yaw_ref = 0.0
+        self._yaw_ref_init = False
+        self.yaw_rate_eff = self.yaw_rate
+        #: Reference path, integrated internally so the controller can steer
+        #: back onto it rather than merely parallel to it.
+        self.ref_pos = np.zeros(2)
+        self.cross_track = 0.0
+
         self.clip_events = 0
         self.total_commands = 0
+
+    # ------------------------------------------------------------- estimation
+
+    @staticmethod
+    def _yaw_of(quat) -> float:
+        m = np.zeros(9)
+        mujoco.mju_quat2Mat(m, quat)
+        return float(np.arctan2(m[3], m[0]))
+
+    def _measure(self, data: mujoco.MjData) -> tuple[float, float, float]:
+        """(forward speed, yaw, yaw rate) in world/body terms."""
+        yaw = self._yaw_of(data.qpos[3:7])
+        heading = np.array([np.cos(yaw), np.sin(yaw)])
+        v_fwd = float(np.dot(data.qvel[0:2], heading))
+        # For a freejoint MuJoCo stores angular velocity in the BODY frame, so
+        # the world yaw rate is the body rate rotated back out. For moderate
+        # roll/pitch the z component dominates and this is close enough for a
+        # feedback term; it is never used as a reported metric.
+        m = np.zeros(9)
+        mujoco.mju_quat2Mat(m, data.qpos[3:7])
+        yaw_rate = float(m.reshape(3, 3)[2] @ data.qvel[3:6])
+        return v_fwd, yaw, yaw_rate
+
+    def _update_feedback(self, data: mujoco.MjData, dt: float, t: float) -> None:
+        p = self.p
+        if dt <= 0.0:
+            return
+        v_fwd, yaw, yaw_rate = self._measure(data)
+
+        # Seed the heading reference from the robot's actual initial heading,
+        # so a randomised start is not read as a tracking error to fight.
+        if not self._yaw_ref_init:
+            self.yaw_ref = yaw
+            self.ref_pos = np.array(data.qpos[0:2], dtype=float)
+            self._yaw_ref_init = True
+
+        active = t >= p.feedback_start
+
+        if p.closed_loop_speed and active:
+            err = self.vx - v_fwd
+            u_unsat = p.kp_speed * err + p.ki_speed * self._speed_integral
+            scale_unsat = 1.0 + u_unsat
+            # Conditional integration: stop accumulating when the frequency is
+            # already at a limit and the error would push it further out. A
+            # plain magnitude clamp on the integral does not prevent this --
+            # the robot sits at freq_max with a saturated integral and thrashes.
+            saturated_high = scale_unsat >= p.freq_max and err > 0
+            saturated_low = scale_unsat <= p.freq_min and err < 0
+            if not (saturated_high or saturated_low):
+                self._speed_integral += err * dt
+            u = p.kp_speed * err + p.ki_speed * self._speed_integral
+            self.freq_scale = float(np.clip(1.0 + u, p.freq_min, p.freq_max))
+
+        # Advance the reference pose. Both integrate the COMMANDED motion, so a
+        # turn command is tracked rather than fought.
+        self.ref_pos = self.ref_pos + self.vx * dt * np.array(
+            [np.cos(self.yaw_ref), np.sin(self.yaw_ref)]
+        )
+        self.yaw_ref += self.yaw_rate * dt
+
+        # Signed lateral offset from the reference path, expressed in the
+        # reference frame. Positive means the robot is to the LEFT of the path.
+        d = np.asarray(data.qpos[0:2], dtype=float) - self.ref_pos
+        self.cross_track = float(-np.sin(self.yaw_ref) * d[0] + np.cos(self.yaw_ref) * d[1])
+
+        if p.closed_loop_heading and active:
+            err = (self.yaw_ref - yaw + np.pi) % (2 * np.pi) - np.pi
+            corr = (
+                p.kp_heading * err
+                + p.kd_heading * (self.yaw_rate - yaw_rate)
+                # Left of the path -> steer right, hence the minus sign.
+                - p.kp_lateral * self.cross_track
+            )
+            corr = float(np.clip(corr, -p.max_yaw_correction, p.max_yaw_correction))
+            self.yaw_rate_eff = self.yaw_rate + corr
+        else:
+            self.yaw_rate_eff = self.yaw_rate
+
+    def _leg_amp(self, leg: str) -> float:
+        """Stride amplitude for one leg under the current effective yaw rate."""
+        side = 1.0 if leg in LEFT_LEGS else -1.0
+        scale = 1.0 - side * self.p.turn_stride_gain * self.yaw_rate_eff
+        return float(np.clip(self.a_nom * scale,
+                             -self.p.hip_amp_max, self.p.hip_amp_max))
 
     # ---------------------------------------------------------------- targets
 
@@ -160,7 +297,7 @@ class CPGController:
         """(hip_pitch, knee) targets for one leg at its own phase."""
         p = self.p
         beta = min(max(p.duty, 0.05), 0.95)
-        A = self.leg_amp[leg] * ramp
+        A = self._leg_amp(leg) * ramp
         K = p.knee_amp * ramp
 
         # Sign convention: hip_pitch rotates about +y, and R_y(theta) maps the
@@ -183,10 +320,16 @@ class CPGController:
         return float(hip), float(knee)
 
     def joint_targets(self, t: float) -> dict[str, float]:
-        """Desired joint angles at time t."""
+        """
+        Desired joint angles now.
+
+        Uses the integrated gait phase, not freq*t: under the speed loop the
+        frequency varies, and freq(t)*t is not the phase of a frequency-
+        modulated oscillator (it double-counts every past frequency change).
+        """
         p = self.p
         ramp = smoothstep(t / p.ramp_time) if p.ramp_time > 0 else 1.0
-        base_phase = p.freq * t
+        base_phase = self.phase
         tgt: dict[str, float] = {}
 
         for leg in LEGS:
@@ -195,11 +338,18 @@ class CPGController:
             tgt[f"{leg}_hip_pitch"] = hip
             tgt[f"{leg}_knee"] = knee
             side = 1.0 if leg in LEFT_LEGS else -1.0
-            tgt[f"{leg}_abduct"] = p.turn_abduct_gain * self.yaw_rate * side * ramp
+            tgt[f"{leg}_abduct"] = p.turn_abduct_gain * self.yaw_rate_eff * side * ramp
 
         if self.has_spine["spine_yaw"]:
             ph = (base_phase * p.spine_freq_mult + p.spine_phase) % 1.0
             und = p.spine_yaw_amp * np.sin(2.0 * np.pi * ph)
+            # Spine steering follows the COMMANDED yaw rate, not the effective
+            # one. Routing the heading loop's correction through the spine too
+            # double-counts it: the legs already act on that correction, and at
+            # 2 m/s the combination over-steers and the robot falls on every
+            # seed -- even on a straight command, where the correction is only
+            # supposed to be a small trim. The spine articulates for intended
+            # turns; the legs handle heading trim.
             tgt["spine_yaw"] = (und + p.turn_spine_gain * self.yaw_rate) * ramp
 
         if self.has_spine["spine_pitch"]:
@@ -213,8 +363,14 @@ class CPGController:
             ph = (base_phase * p.spine_freq_mult + p.spine_phase + 0.25) % 1.0
             tgt["spine_roll"] = p.spine_roll_amp * np.sin(2.0 * np.pi * ph) * ramp
 
-        if self.has_tail and p.tail_yaw_gain:
-            tgt["tail_yaw"] = p.tail_yaw_gain * self.yaw_rate * ramp
+        if self.has_tail:
+            if p.tail_yaw_gain:
+                tgt["tail_yaw"] = p.tail_yaw_gain * self.yaw_rate_eff * ramp
+            elif p.hold_tail:
+                # Actively held rather than left swinging. See hold_tail.
+                tgt["tail_yaw"] = 0.0
+            if p.hold_tail:
+                tgt["tail_pitch"] = 0.0
 
         return tgt
 
@@ -239,7 +395,12 @@ class CPGController:
         return ctrl
 
     def __call__(self, data: mujoco.MjData, t: float) -> np.ndarray:
-        """Clipped torque vector for this instant."""
+        """Clipped torque vector for this instant. Advances the gait phase."""
+        dt = self.model.opt.timestep if self._last_t is None else max(t - self._last_t, 0.0)
+        self._last_t = t
+        self._update_feedback(data, dt, t)
+        self.phase = (self.phase + self.p.freq * self.freq_scale * dt) % 1.0
+
         ctrl = self._pd(data, self.joint_targets(t))
         clipped = np.clip(ctrl, self.ctrl_lo, self.ctrl_hi)
         self.clip_events += int(np.count_nonzero(~np.isclose(clipped, ctrl)))
@@ -260,6 +421,9 @@ class CPGController:
         for j, present in self.has_spine.items():
             if present:
                 targets[j] = 0.0
+        if self.has_tail and self.p.hold_tail:
+            targets["tail_yaw"] = 0.0
+            targets["tail_pitch"] = 0.0
         return np.clip(self._pd(data, targets), self.ctrl_lo, self.ctrl_hi)
 
     @property
