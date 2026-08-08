@@ -1,0 +1,161 @@
+<mujoco model="spine_quadruped">
+  <!--
+    Cheetah-style quadruped with a 3-DOF active spine (yaw, pitch, roll).
+    15 DOF total: 12 leg joints + 3 spine joints.
+
+    TO COMPARE AGAINST A RIGID TRUNK:
+    set the three spine joints' range to "0 0" (or delete the joints).
+    That is the exact experiment S-Cheetah ran.
+  -->
+
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" integrator="implicitfast"/>
+
+  <default>
+    <geom type="capsule" density="600" friction="0.9 0.01 0.001"/>
+    <joint type="hinge" damping="0.5" armature="0.01"/>
+    <motor ctrlrange="-33.5 33.5"/>
+    <default class="spine">
+      <motor ctrlrange="-50 50"/>
+      <joint damping="1.0" armature="0.02"/>
+    </default>
+    <default class="leg">
+      <geom size="0.022"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.2 0.2 0.2" rgb2="0.3 0.3 0.3"
+             width="512" height="512"/>
+    <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.1"/>
+    <material name="body" rgba="0.25 0.25 0.28 1"/>
+    <material name="accent" rgba="0.85 0.45 0.1 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="floor" type="plane" size="20 20 0.05" material="grid"/>
+
+    <!-- ============ FRONT BODY ============ -->
+    <body name="front_body" pos="0 0 0.44">
+      <freejoint/>
+      <geom name="front_trunk" fromto="0 0 0 0.18 0 0" size="0.06" material="body"/>
+      <site name="imu" pos="0.1 0 0.05"/>
+
+      <!-- front left leg -->
+      <body name="fl_hip" pos="0.16 0.09 0">
+        <joint name="fl_abduct" axis="1 0 0" range="-0.7 0.7"/>
+        <geom class="leg" fromto="0 0 0 0 0.04 0" material="accent"/>
+        <body name="fl_thigh" pos="0 0.05 0">
+          <joint name="fl_hip_pitch" axis="0 1 0" range="-2.0 2.0"/>
+          <geom class="leg" fromto="0 0 0 0 0 -0.22" material="body"/>
+          <body name="fl_calf" pos="0 0 -0.22">
+            <joint name="fl_knee" axis="0 1 0" range="-2.6 -0.2"/>
+            <geom class="leg" fromto="0 0 0 0 0 -0.22" size="0.016" material="body"/>
+            <geom name="fl_foot" type="sphere" size="0.025" pos="0 0 -0.22" friction="1.2"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- front right leg -->
+      <body name="fr_hip" pos="0.16 -0.09 0">
+        <joint name="fr_abduct" axis="1 0 0" range="-0.7 0.7"/>
+        <geom class="leg" fromto="0 0 0 0 -0.04 0" material="accent"/>
+        <body name="fr_thigh" pos="0 -0.05 0">
+          <joint name="fr_hip_pitch" axis="0 1 0" range="-2.0 2.0"/>
+          <geom class="leg" fromto="0 0 0 0 0 -0.22" material="body"/>
+          <body name="fr_calf" pos="0 0 -0.22">
+            <joint name="fr_knee" axis="0 1 0" range="-2.6 -0.2"/>
+            <geom class="leg" fromto="0 0 0 0 0 -0.22" size="0.016" material="body"/>
+            <geom name="fr_foot" type="sphere" size="0.025" pos="0 0 -0.22" friction="1.2"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ============ SPINE: yaw -> pitch -> roll (S-Cheetah ordering) ============ -->
+      <body name="spine_yaw" pos="0 0 0">
+        <joint name="spine_yaw" class="spine" axis="0 0 1" range="-1.0 1.0"/>
+        <geom name="spine_y" fromto="0 0 0 -0.05 0 0" size="0.045" material="accent"/>
+
+        <body name="spine_pitch" pos="-0.05 0 0">
+          <joint name="spine_pitch" class="spine" axis="0 1 0" range="-1.5 1.5"/>
+          <geom name="spine_p" fromto="0 0 0 -0.05 0 0" size="0.045" material="accent"/>
+
+          <body name="spine_roll" pos="-0.05 0 0">
+            <joint name="spine_roll" class="spine" axis="1 0 0" range="-2.0 2.0"/>
+            <geom name="spine_r" fromto="0 0 0 -0.05 0 0" size="0.045" material="accent"/>
+
+            <!-- ============ REAR BODY ============ -->
+            <body name="rear_body" pos="-0.05 0 0">
+              <geom name="rear_trunk" fromto="0 0 0 -0.18 0 0" size="0.06" material="body"/>
+
+              <!-- rear left leg -->
+              <body name="rl_hip" pos="-0.16 0.09 0">
+                <joint name="rl_abduct" axis="1 0 0" range="-0.7 0.7"/>
+                <geom class="leg" fromto="0 0 0 0 0.04 0" material="accent"/>
+                <body name="rl_thigh" pos="0 0.05 0">
+                  <joint name="rl_hip_pitch" axis="0 1 0" range="-2.0 2.0"/>
+                  <geom class="leg" fromto="0 0 0 0 0 -0.22" material="body"/>
+                  <body name="rl_calf" pos="0 0 -0.22">
+                    <joint name="rl_knee" axis="0 1 0" range="-2.6 -0.2"/>
+                    <geom class="leg" fromto="0 0 0 0 0 -0.22" size="0.016" material="body"/>
+                    <geom name="rl_foot" type="sphere" size="0.025" pos="0 0 -0.22" friction="1.2"/>
+                  </body>
+                </body>
+              </body>
+
+              <!-- rear right leg -->
+              <body name="rr_hip" pos="-0.16 -0.09 0">
+                <joint name="rr_abduct" axis="1 0 0" range="-0.7 0.7"/>
+                <geom class="leg" fromto="0 0 0 0 -0.04 0" material="accent"/>
+                <body name="rr_thigh" pos="0 -0.05 0">
+                  <joint name="rr_hip_pitch" axis="0 1 0" range="-2.0 2.0"/>
+                  <geom class="leg" fromto="0 0 0 0 0 -0.22" material="body"/>
+                  <body name="rr_calf" pos="0 0 -0.22">
+                    <joint name="rr_knee" axis="0 1 0" range="-2.6 -0.2"/>
+                    <geom class="leg" fromto="0 0 0 0 0 -0.22" size="0.016" material="body"/>
+                    <geom name="rr_foot" type="sphere" size="0.025" pos="0 0 -0.22" friction="1.2"/>
+                  </body>
+                </body>
+              </body>
+
+              <!-- tail: inertial authority for turning -->
+              <body name="tail" pos="-0.18 0 0.02">
+                <joint name="tail_yaw" axis="0 0 1" range="-1.2 1.2" damping="0.3"/>
+                <joint name="tail_pitch" axis="0 1 0" range="-1.0 1.0" damping="0.3"/>
+                <geom name="tail_geom" fromto="0 0 0 -0.30 0 0" size="0.012" density="400" material="body"/>
+                <geom name="tail_tip" type="sphere" size="0.028" pos="-0.30 0 0" density="1500"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="fl_abduct"    joint="fl_abduct"/>
+    <motor name="fl_hip_pitch" joint="fl_hip_pitch"/>
+    <motor name="fl_knee"      joint="fl_knee"/>
+    <motor name="fr_abduct"    joint="fr_abduct"/>
+    <motor name="fr_hip_pitch" joint="fr_hip_pitch"/>
+    <motor name="fr_knee"      joint="fr_knee"/>
+    <motor name="rl_abduct"    joint="rl_abduct"/>
+    <motor name="rl_hip_pitch" joint="rl_hip_pitch"/>
+    <motor name="rl_knee"      joint="rl_knee"/>
+    <motor name="rr_abduct"    joint="rr_abduct"/>
+    <motor name="rr_hip_pitch" joint="rr_hip_pitch"/>
+    <motor name="rr_knee"      joint="rr_knee"/>
+    <motor name="spine_yaw"   class="spine" joint="spine_yaw"/>
+    <motor name="spine_pitch" class="spine" joint="spine_pitch"/>
+    <motor name="spine_roll"  class="spine" joint="spine_roll"/>
+    <motor name="tail_yaw"   joint="tail_yaw"   ctrlrange="-8 8"/>
+    <motor name="tail_pitch" joint="tail_pitch" ctrlrange="-8 8"/>
+  </actuator>
+
+  <sensor>
+    <framequat name="body_quat" objtype="site" objname="imu"/>
+    <gyro name="body_gyro" site="imu"/>
+    <accelerometer name="body_acc" site="imu"/>
+  </sensor>
+</mujoco>
