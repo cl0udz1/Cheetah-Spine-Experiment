@@ -49,6 +49,11 @@ class VariantInfo:
     removed_motors: tuple[str, ...] = ()
     actuator_names: tuple[str, ...] = field(default_factory=tuple)
     joint_names: tuple[str, ...] = field(default_factory=tuple)
+    #: Spring-damper on the spine joints. Zero for "spine" and "rigid".
+    spine_stiffness: float = 0.0
+    spine_damping: float = 0.0
+    #: True when no actuator can reach any spine joint.
+    spine_unactuated: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -61,6 +66,9 @@ class VariantInfo:
             "total_mass_kg": round(self.total_mass, 6),
             "removed_joints": list(self.removed_joints),
             "removed_motors": list(self.removed_motors),
+            "spine_stiffness": self.spine_stiffness,
+            "spine_damping": self.spine_damping,
+            "spine_unactuated": self.spine_unactuated,
         }
 
 
@@ -95,32 +103,80 @@ def _strip_spine(root: ET.Element, keep: set[str]) -> tuple[list[str], list[str]
     return removed_j, removed_m
 
 
+def _make_spine_passive(
+    root: ET.Element, keep: set[str], stiffness: float, damping: float
+) -> list[str]:
+    """
+    Turn the spine into a passive spring-damper: keep the joints, delete their
+    motors, and give each joint stiffness and damping.
+
+    A PD controller holding a joint at zero with gains (kp, kd) is *exactly* a
+    spring-damper of stiffness kp and damping kd, up to actuator saturation. So
+    setting stiffness=kp_spine and damping=kd_spine reproduces the actuated
+    variant's neutral-hold behaviour with zero motor torque, which is what makes
+    "is the benefit compliance or control?" a clean question.
+
+    Returns the names of the motors removed.
+    """
+    removed_m: list[str] = []
+    for parent in root.iter():
+        for child in list(parent):
+            if child.tag == "joint" and child.get("name", "") in keep:
+                child.set("stiffness", f"{stiffness:g}")
+                child.set("damping", f"{damping:g}")
+                # springref defaults to 0, i.e. the spring's rest position is
+                # the neutral spine. Stated explicitly so it cannot drift with
+                # a future edit to the default class.
+                child.set("springref", "0")
+            elif child.tag == "motor" and child.get("joint", "") in keep:
+                parent.remove(child)
+                removed_m.append(child.get("name", child.get("joint", "")))
+    return removed_m
+
+
 def build_model(
-    spine: bool = True,
+    variant: str = "spine",
     xml_path: str | Path = DEFAULT_XML,
     keep_spine_joints: tuple[str, ...] | None = None,
     timestep: float | None = None,
+    passive_stiffness: float = 400.0,
+    passive_damping: float = 12.0,
+    spine: bool | None = None,
 ) -> tuple[mujoco.MjModel, VariantInfo]:
     """
-    Compile the spine or rigid variant.
+    Compile one of the three trunk variants.
+
+        "spine"   -- joints present, motor-driven (active spine)
+        "rigid"   -- joints deleted, child body welded to parent (rigid trunk)
+        "passive" -- joints present with spring+damper, NO motors (compliant
+                     trunk). Isolates compliance from control.
 
     Args:
-        spine: True keeps the spine joints, False removes all of them.
+        variant: one of the three names above.
         xml_path: source MJCF.
-        keep_spine_joints: explicit subset to keep (overrides `spine`). Lets a
-            sweep ask for e.g. pitch-only without hand-editing XML.
+        keep_spine_joints: explicit subset to keep. Lets a sweep ask for e.g.
+            pitch-only without hand-editing XML.
         timestep: override the integrator timestep.
+        passive_stiffness/passive_damping: spring-damper gains for the passive
+            variant. Defaults match kp_spine/kd_spine so a passive spine and a
+            held actuated spine are the same mechanical system.
+        spine: deprecated bool form of `variant`, kept so older call sites work.
 
     Returns (model, info). Raises ModelBuildError if the compiled model does
-    not have the DOF count we asked for -- a silent no-op regex is exactly the
-    failure mode that produces a fake "rigid" result.
+    not match the request -- a silent no-op edit is exactly the failure mode
+    that produces a fake "rigid" result.
     """
+    if spine is not None:
+        variant = "spine" if spine else "rigid"
+    if variant not in ("spine", "rigid", "passive"):
+        raise ValueError(f"unknown variant {variant!r}")
+
     xml_path = Path(xml_path)
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
     if keep_spine_joints is None:
-        keep = set(SPINE_JOINTS) if spine else set()
+        keep = set() if variant == "rigid" else set(SPINE_JOINTS)
     else:
         keep = set(keep_spine_joints)
         unknown = keep - set(SPINE_JOINTS)
@@ -128,6 +184,8 @@ def build_model(
             raise ValueError(f"unknown spine joints: {sorted(unknown)}")
 
     removed_j, removed_m = _strip_spine(root, keep)
+    if variant == "passive":
+        removed_m += _make_spine_passive(root, keep, passive_stiffness, passive_damping)
 
     if timestep is not None:
         opt = root.find("option")
@@ -158,7 +216,31 @@ def build_model(
         if name in actuator_names:
             raise ModelBuildError(f"motor {name!r} survived removal")
 
-    name = "spine" if keep == set(SPINE_JOINTS) else ("rigid" if not keep else "partial")
+    # The passive variant's defining property is that no actuator can reach the
+    # spine. Verify against the compiled model rather than trusting the edit.
+    if variant == "passive":
+        for i in range(model.nu):
+            if model.actuator_trntype[i] == mujoco.mjtTrn.mjTRN_JOINT:
+                jid = int(model.actuator_trnid[i, 0])
+                jn = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+                if jn in SPINE_JOINTS:
+                    raise ModelBuildError(
+                        f"passive variant still has an actuator driving {jn!r}"
+                    )
+        for jn in keep:
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, jn)
+            if model.jnt_stiffness[jid] <= 0:
+                raise ModelBuildError(
+                    f"passive variant has no spring on {jn!r} "
+                    f"(stiffness={model.jnt_stiffness[jid]})"
+                )
+
+    if keep == set(SPINE_JOINTS):
+        name = variant  # "spine" or "passive"
+    elif not keep:
+        name = "rigid"
+    else:
+        name = f"partial_{variant}"
     info = VariantInfo(
         name=name,
         spine_joints=tuple(survivors),
@@ -171,6 +253,9 @@ def build_model(
         removed_motors=tuple(removed_m),
         actuator_names=actuator_names,
         joint_names=joint_names,
+        spine_stiffness=passive_stiffness if variant == "passive" else 0.0,
+        spine_damping=passive_damping if variant == "passive" else 0.0,
+        spine_unactuated=(variant == "passive" or not keep),
     )
     return model, info
 

@@ -47,6 +47,10 @@ class ExperimentConfig:
     seeds: tuple[int, ...] = (0,)
     gait: dict = field(default_factory=dict)
     timestep: float | None = None
+    #: Passive-variant spring-damper. Defaults match kp_spine/kd_spine so a
+    #: passive spine and a held actuated spine are the same mechanical system.
+    passive_stiffness: float = 400.0
+    passive_damping: float = 12.0
     render: bool = False
     video_fps: int = 50
     results_dir: str = "results"
@@ -135,15 +139,21 @@ def run_experiment(cfg: ExperimentConfig) -> dict:
     models: dict[str, tuple] = {}
     for v in cfg.variants:
         model, info = build_model(
-            spine=(v == "spine"),
+            variant=v,
             xml_path=cfg.xml_path,
             timestep=cfg.timestep,
+            passive_stiffness=cfg.passive_stiffness,
+            passive_damping=cfg.passive_damping,
         )
         issues = check_model_sanity(model, label=v)
         models[v] = (model, info, issues)
-        print(f"  built {v:6s}: nq={info.nq} nv={info.nv} nu={info.nu} "
+        extra = ""
+        if info.spine_stiffness:
+            extra = (f" spring k={info.spine_stiffness:g} c={info.spine_damping:g}"
+                     f" (unactuated)")
+        print(f"  built {v:8s}: nq={info.nq} nv={info.nv} nu={info.nu} "
               f"njnt={info.njnt} mass={info.total_mass:.4f}kg "
-              f"spine_joints={list(info.spine_joints)}")
+              f"spine_joints={list(info.spine_joints)}{extra}")
 
     # Mass-matching is what makes the A/B interpretable; assert it loudly.
     masses = {v: models[v][1].total_mass for v in cfg.variants}
