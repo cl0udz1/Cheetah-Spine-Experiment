@@ -86,6 +86,13 @@ class Recorder:
         self.message = msg
         if not ok:
             return
+        # The stock scene is very dark -- a single light at z=3 over a dark
+        # floor. These fields are visualisation-only and do not touch dynamics,
+        # so brightening them cannot change a physics result.
+        model.vis.headlight.ambient[:] = [0.45, 0.45, 0.45]
+        model.vis.headlight.diffuse[:] = [0.65, 0.65, 0.65]
+        model.vis.headlight.specular[:] = [0.15, 0.15, 0.15]
+
         try:
             self._renderer = mujoco.Renderer(model, height=height, width=width)
         except Exception as exc:  # noqa: BLE001
@@ -241,6 +248,8 @@ def side_by_side(
                   flush=True)
             return False
         if sep is None:
-            sep = np.full((a.shape[0], 4, 3), 90, dtype=a.dtype)
+            # 16 px keeps the composed width divisible by macro_block_size, so
+            # libx264 does not silently rescale the frames.
+            sep = np.full((a.shape[0], 16, 3), 90, dtype=a.dtype)
         combined.append(np.concatenate([a, sep, b], axis=1))
     return write_video(combined, path, fps=fps)
